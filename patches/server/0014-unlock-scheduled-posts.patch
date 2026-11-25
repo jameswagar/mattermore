@@ -1,0 +1,199 @@
+diff --git a/server/channels/api4/scheduled_post.go b/server/channels/api4/scheduled_post.go
+index 1ef9b984..447c0771 100644
+--- a/server/channels/api4/scheduled_post.go
++++ b/server/channels/api4/scheduled_post.go
+@@ -72,6 +72,2 @@ func requireScheduledPostsEnabled(c *Context) {
+ 
+-	if c.App.Channels().License() == nil {
+-		c.Err = model.NewAppError("", "api.scheduled_posts.license_error", nil, "", http.StatusBadRequest)
+-		return
+-	}
+ }
+diff --git a/server/channels/api4/scheduled_post_test.go b/server/channels/api4/scheduled_post_test.go
+index f85e0051..6fc0534c 100644
+--- a/server/channels/api4/scheduled_post_test.go
++++ b/server/channels/api4/scheduled_post_test.go
+@@ -716 +716,32 @@ func TestScheduledPostBurnOnReadRecurrence(t *testing.T) {
+ }
++
++func TestCreateScheduledPostWithoutLicense(t *testing.T) {
++	mainHelper.Parallel(t)
++	th := Setup(t).InitBasic(t)
++	th.App.Srv().SetLicense(nil)
++	th.App.UpdateConfig(func(cfg *model.Config) { *cfg.ServiceSettings.ScheduledPosts = true })
++
++	scheduledPost := &model.ScheduledPost{
++		Draft: model.Draft{
++			CreateAt:  model.GetMillis(),
++			UserId:    th.BasicUser.Id,
++			ChannelId: th.BasicChannel.Id,
++			Message:   "scheduled without a licence",
++		},
++		ScheduledAt: model.GetMillis() + 100000,
++	}
++
++	t.Run("creates the post when the setting is on", func(t *testing.T) {
++		created, resp, err := th.Client.CreateScheduledPost(context.Background(), scheduledPost)
++		require.NoError(t, err)
++		CheckCreatedStatus(t, resp)
++		require.NotNil(t, created)
++	})
++
++	t.Run("refuses when the setting is off", func(t *testing.T) {
++		th.App.UpdateConfig(func(cfg *model.Config) { *cfg.ServiceSettings.ScheduledPosts = false })
++		_, resp, err := th.Client.CreateScheduledPost(context.Background(), scheduledPost)
++		require.Error(t, err)
++		CheckBadRequestStatus(t, resp)
++	})
++}
+diff --git a/server/channels/app/scheduled_post.go b/server/channels/app/scheduled_post.go
+index 0df0624b..3e9a9a6a 100644
+--- a/server/channels/app/scheduled_post.go
++++ b/server/channels/app/scheduled_post.go
+@@ -15,3 +15,3 @@ import (
+ // recurringScheduledPostsEnabled gates turning recurrence on. The api4 routes already enforce
+-// the ScheduledPosts setting and license for every scheduled post request, and the job keeps
++// the ScheduledPosts setting for every scheduled post request, and the job keeps
+ // sending existing recurring series regardless of the flag.
+diff --git a/server/channels/app/scheduled_post_job.go b/server/channels/app/scheduled_post_job.go
+index 6515e8f6..d78b66f7 100644
+--- a/server/channels/app/scheduled_post_job.go
++++ b/server/channels/app/scheduled_post_job.go
+@@ -34,6 +34,2 @@ func (a *App) ProcessScheduledPosts(rctx request.CTX) {
+ 
+-	if a.License() == nil {
+-		return
+-	}
+-
+ 	beforeTime := model.GetMillis()
+diff --git a/server/channels/app/scheduled_post_job_test.go b/server/channels/app/scheduled_post_job_test.go
+index 560d5d68..e9d353f4 100644
+--- a/server/channels/app/scheduled_post_job_test.go
++++ b/server/channels/app/scheduled_post_job_test.go
+@@ -772 +772,36 @@ func TestHandleFailedScheduledPosts(t *testing.T) {
+ }
++
++func TestProcessScheduledPostsWithoutLicense(t *testing.T) {
++	mainHelper.Parallel(t)
++	th := Setup(t).InitBasic(t)
++	th.App.Srv().SetLicense(nil)
++	th.App.UpdateConfig(func(cfg *model.Config) { *cfg.ServiceSettings.ScheduledPosts = true })
++
++	scheduledPost := &model.ScheduledPost{
++		Draft: model.Draft{
++			CreateAt:  model.GetMillis(),
++			UserId:    th.BasicUser.Id,
++			ChannelId: th.BasicChannel.Id,
++			Message:   "due scheduled post without a licence",
++		},
++		ScheduledAt: model.GetMillis() - 1000,
++	}
++	_, err := th.Server.Store().ScheduledPost().CreateScheduledPost(th.Context, scheduledPost)
++	require.NoError(t, err)
++
++	th.App.ProcessScheduledPosts(th.Context)
++
++	pending, err := th.App.Srv().Store().ScheduledPost().GetScheduledPostsForUser(th.Context, th.BasicUser.Id, th.BasicChannel.TeamId)
++	require.NoError(t, err)
++	require.Empty(t, pending, "the due post is sent and removed")
++
++	posts, appErr := th.App.GetPostsPage(th.Context, model.GetPostsOptions{ChannelId: th.BasicChannel.Id, Page: 0, PerPage: 10})
++	require.Nil(t, appErr)
++	var found bool
++	for _, p := range posts.Posts {
++		if p.Message == "due scheduled post without a licence" {
++			found = true
++		}
++	}
++	require.True(t, found, "the scheduled message was published to the channel")
++}
+diff --git a/server/config/client.go b/server/config/client.go
+index d977af27..75d7eca3 100644
+--- a/server/config/client.go
++++ b/server/config/client.go
+@@ -158,2 +158,3 @@ func GenerateClientConfig(c *model.Config, telemetryID string, license *model.Li
+ 	props["AllowSyncedDrafts"] = strconv.FormatBool(*c.ServiceSettings.AllowSyncedDrafts)
++	props["ScheduledPosts"] = strconv.FormatBool(*c.ServiceSettings.ScheduledPosts)
+ 	props["DelayChannelAutocomplete"] = strconv.FormatBool(*c.ExperimentalSettings.DelayChannelAutocomplete)
+@@ -240,3 +241,2 @@ func GenerateClientConfig(c *model.Config, telemetryID string, license *model.Li
+ 			props["PostAcknowledgements"] = "true"
+-			props["ScheduledPosts"] = strconv.FormatBool(*c.ServiceSettings.ScheduledPosts)
+ 		}
+diff --git a/server/i18n/en.json b/server/i18n/en.json
+index b5af05dd..08daca4f 100644
+--- a/server/i18n/en.json
++++ b/server/i18n/en.json
+@@ -4571,7 +4571,2 @@
+   },
+-  {
+-    "id": "api.scheduled_posts.license_error",
+-    "translation": "Scheduled posts feature requires a license",
+-    "description": "API error when scheduled posts (messages scheduled to send later) are used on a server without the required license."
+-  },
+   {
+diff --git a/webapp/channels/src/components/admin_console/admin_definition.tsx b/webapp/channels/src/components/admin_console/admin_definition.tsx
+index 8d94358b..21e6b21f 100644
+--- a/webapp/channels/src/components/admin_console/admin_definition.tsx
++++ b/webapp/channels/src/components/admin_console/admin_definition.tsx
+@@ -3640,3 +3640,2 @@ const AdminDefinition: AdminDefinitionType = {
+                                     isDisabled: it.not(it.userHasWritePermissionOnResource(RESOURCE_KEYS.SITE.POSTS)),
+-                                    isHidden: it.not(it.licensed),
+                                 },
+diff --git a/webapp/channels/src/components/drafts/drafts_link/drafts_link.test.tsx b/webapp/channels/src/components/drafts/drafts_link/drafts_link.test.tsx
+index 9116d42b..7f1560a8 100644
+--- a/webapp/channels/src/components/drafts/drafts_link/drafts_link.test.tsx
++++ b/webapp/channels/src/components/drafts/drafts_link/drafts_link.test.tsx
+@@ -149,3 +149,3 @@ describe('components/drafts/drafts_link', () => {
+ 
+-    it('should not show scheduled posts badge when not licensed', () => {
++    it('should show scheduled posts badge when not licensed', () => {
+         const state = {
+@@ -160,2 +160,3 @@ describe('components/drafts/drafts_link', () => {
+                 general: {
++                    config: {ScheduledPosts: 'true'},
+                     license: {
+@@ -169,3 +170,3 @@ describe('components/drafts/drafts_link', () => {
+ 
+-        expect(screen.queryByTestId('scheduledPostIcon')).not.toBeInTheDocument();
++        expect(screen.getByTestId('scheduledPostIcon')).toBeInTheDocument();
+     });
+@@ -206,3 +207,2 @@ describe('components/drafts/drafts_link', () => {
+         {config: {ScheduledPosts: 'false'}},
+-        {license: {IsLicensed: 'false'}},
+     ])('should not fetch scheduled posts when component mounts if disabled', async (partialConf) => {
+diff --git a/webapp/channels/src/packages/mattermost-redux/src/selectors/entities/scheduled_posts.test.ts b/webapp/channels/src/packages/mattermost-redux/src/selectors/entities/scheduled_posts.test.ts
+index 268e5b40..77d7752e 100644
+--- a/webapp/channels/src/packages/mattermost-redux/src/selectors/entities/scheduled_posts.test.ts
++++ b/webapp/channels/src/packages/mattermost-redux/src/selectors/entities/scheduled_posts.test.ts
+@@ -56,3 +56,3 @@ describe('isRecurringScheduledPostsEnabled', () => {
+ 
+-    it('should be enabled only when scheduled posts, the license and the feature flag all allow it', () => {
++    it('should be enabled only when scheduled posts and the feature flag allow it', () => {
+         expect(isRecurringScheduledPostsEnabled(makeState('true', 'true', 'true'))).toBe(true);
+@@ -60,3 +60,3 @@ describe('isRecurringScheduledPostsEnabled', () => {
+         expect(isRecurringScheduledPostsEnabled(makeState('true', 'false', 'true'))).toBe(false);
+-        expect(isRecurringScheduledPostsEnabled(makeState('true', 'true', 'false'))).toBe(false);
++        expect(isRecurringScheduledPostsEnabled(makeState('true', 'true', 'false'))).toBe(true);
+     });
+diff --git a/webapp/channels/src/packages/mattermost-redux/src/selectors/entities/scheduled_posts.ts b/webapp/channels/src/packages/mattermost-redux/src/selectors/entities/scheduled_posts.ts
+index 203b1f4c..6edc461a 100644
+--- a/webapp/channels/src/packages/mattermost-redux/src/selectors/entities/scheduled_posts.ts
++++ b/webapp/channels/src/packages/mattermost-redux/src/selectors/entities/scheduled_posts.ts
+@@ -3,3 +3,3 @@
+ 
+-import type {ClientLicense, ClientConfig} from '@mattermost/types/config';
++import type {ClientConfig} from '@mattermost/types/config';
+ import type {ScheduledPost, ScheduledPostsState} from '@mattermost/types/schedule_post';
+@@ -9,3 +9,3 @@ import type {GlobalState} from '@mattermost/types/store';
+ import {createSelector} from 'mattermost-redux/selectors/create_selector';
+-import {getConfig, getFeatureFlagValue, getLicense} from 'mattermost-redux/selectors/entities/general';
++import {getConfig, getFeatureFlagValue} from 'mattermost-redux/selectors/entities/general';
+ import {getTeamIdByChannelId} from 'mattermost-redux/selectors/entities/teams';
+@@ -103,5 +103,4 @@ export const isScheduledPostsEnabled: (a: GlobalState) => boolean = createSelect
+     getConfig,
+-    getLicense,
+-    (config: Partial<ClientConfig>, license: ClientLicense): boolean => {
+-        return config.ScheduledPosts === 'true' && license.IsLicensed === 'true';
++    (config: Partial<ClientConfig>): boolean => {
++        return config.ScheduledPosts === 'true';
+     },
