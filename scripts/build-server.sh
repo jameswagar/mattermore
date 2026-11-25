@@ -24,6 +24,16 @@ for patch in "$ROOT"/patches/server/*.patch; do
     git -C "$WORK" apply "$patch"
 done
 
+# Patches kept outside this repository apply last, in name order. Unset by
+# default, so a plain build is unchanged.
+if [ -n "${EXTRA_PATCHES_DIR:-}" ]; then
+    for patch in "$EXTRA_PATCHES_DIR"/*.patch; do
+        [ -e "$patch" ] || continue
+        echo "    $(basename "$patch") (extra)"
+        git -C "$WORK" apply "$patch"
+    done
+fi
+
 # The marks are images, not code, so they are copied rather than patched. They
 # are committed already rendered, so this needs no image tooling.
 "$ROOT/scripts/brand-assets.sh" apply "$WORK"
