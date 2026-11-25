@@ -44,7 +44,10 @@ RUN apk add --no-cache python3
 COPY --from=upstream /mattermost/config/config.json /in.json
 COPY config/overrides.json /overrides.json
 COPY scripts/merge-config.py /merge.py
-RUN python3 /merge.py /in.json /overrides.json /out.json
+# The mode is set here, not with COPY --chmod, so the image also builds with
+# the plain Docker builder, which has no BuildKit.
+RUN python3 /merge.py /in.json /overrides.json /out.json \
+ && chmod 600 /out.json
 
 
 ARG UPSTREAM_VERSION
@@ -52,7 +55,7 @@ FROM docker.io/mattermost/mattermost-team-edition:${UPSTREAM_VERSION}
 
 COPY --chown=2000:2000 mattermore-server /mattermost/bin/mattermost
 COPY --from=webapp --chown=2000:2000 /out /mattermost/client
-COPY --from=config --chown=2000:2000 --chmod=600 /out.json /mattermost/config/config.json
+COPY --from=config --chown=2000:2000 /out.json /mattermost/config/config.json
 
 
 # Mattermore ships its own calls bundle. Upstream's cannot be deleted from
